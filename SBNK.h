@@ -10,8 +10,10 @@
 #pragma once
 
 #include "SWAR.h"
-#include "INFOEntry.h"
 #include "common.h"
+
+namespace melonDS::Sound::SSEQPlayer
+{
 
 struct SBNKInstrumentRange
 {
@@ -48,7 +50,6 @@ struct SBNK
 	std::vector<SBNKInstrument> instruments;
 
 	const SWAR *waveArc[4];
-	INFOEntryBANK info;
 
 	SBNK(const std::string &fn = "");
 	SBNK(const SBNK &sbnk);
@@ -56,3 +57,5 @@ struct SBNK
 
 	void Read(PseudoFile &file);
 };
+
+}

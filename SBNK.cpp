@@ -11,6 +11,9 @@
 #include "SBNK.h"
 #include "NDSStdHeader.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 SBNKInstrumentRange::SBNKInstrumentRange(uint8_t lowerNote, uint8_t upperNote, int recordType) : lowNote(lowerNote), highNote(upperNote),
 	record(recordType), swav(0), swar(0), noteNumber(0), attackRate(0), decayRate(0), sustainLevel(0), releaseRate(0), pan(0)
 {
@@ -35,8 +38,8 @@ SBNKInstrument::SBNKInstrument() : record(0), ranges()
 void SBNKInstrument::Read(PseudoFile &file, uint32_t startOffset)
 {
 	this->record = file.ReadLE<uint8_t>();
-	uint16_t offset = file.ReadLE<uint16_t>();
-	file.ReadLE<uint8_t>();
+	uint32_t offset = file.ReadLE<uint16_t>();
+	offset |= file.ReadLE<uint8_t>() << 16;
 	uint32_t endOfInst = file.pos;
 	file.pos = startOffset + offset;
 	if (this->record)
@@ -80,12 +83,12 @@ void SBNKInstrument::Read(PseudoFile &file, uint32_t startOffset)
 	file.pos = endOfInst;
 }
 
-SBNK::SBNK(const std::string &fn) : filename(fn), instruments(), info()
+SBNK::SBNK(const std::string &fn) : filename(fn), instruments()
 {
 	memset(this->waveArc, 0, sizeof(this->waveArc));
 }
 
-SBNK::SBNK(const SBNK &sbnk) : filename(sbnk.filename), instruments(sbnk.instruments), info(sbnk.info)
+SBNK::SBNK(const SBNK &sbnk) : filename(sbnk.filename), instruments(sbnk.instruments)
 {
 	memcpy(this->waveArc, sbnk.waveArc, sizeof(this->waveArc));
 }
@@ -98,7 +101,6 @@ SBNK &SBNK::operator=(const SBNK &sbnk)
 		this->instruments = sbnk.instruments;
 
 		memcpy(this->waveArc, sbnk.waveArc, sizeof(this->waveArc));
-		this->info = sbnk.info;
 	}
 	return *this;
 }
@@ -120,4 +122,6 @@ void SBNK::Read(PseudoFile &file)
 	this->instruments.resize(count);
 	for (uint32_t i = 0; i < count; ++i)
 		this->instruments[i].Read(file, startOfSBNK);
+}
+
 }

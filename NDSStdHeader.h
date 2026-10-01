@@ -11,6 +11,9 @@
 
 #include "common.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 struct NDSStdHeader
 {
 	int8_t type[4];
@@ -21,3 +24,5 @@ struct NDSStdHeader
 	void Read(PseudoFile &file);
 	void Verify(const std::string &typeToCheck, uint32_t magicToCheck);
 };
+
+}

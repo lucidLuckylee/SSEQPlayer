@@ -11,8 +11,10 @@
 
 #include <map>
 #include "SWAV.h"
-#include "INFOEntry.h"
 #include "common.h"
+
+namespace melonDS::Sound::SSEQPlayer
+{
 
 /*
  * The size has been left out of this structure as it is unused by this player.
@@ -22,9 +24,10 @@ struct SWAR
 	std::string filename;
 	std::map<uint32_t, SWAV> swavs;
 
-	INFOEntryWAVEARC info;
 
 	SWAR(const std::string &fn = "");
 
 	void Read(PseudoFile &file);
 };
+
+}

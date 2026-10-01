@@ -14,6 +14,9 @@
 #include <bitset>
 #include "consts.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 struct Player;
 
 enum StackType
@@ -94,3 +97,5 @@ struct Track
 	void ReleaseAllNotes();
 	void Run();
 };
+
+}

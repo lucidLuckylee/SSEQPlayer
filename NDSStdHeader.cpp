@@ -10,6 +10,9 @@
 #include <stdexcept>
 #include "NDSStdHeader.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 NDSStdHeader::NDSStdHeader() : magic(0)
 {
 	memset(this->type, 0, sizeof(this->type));
@@ -28,4 +31,6 @@ void NDSStdHeader::Verify(const std::string &typeToCheck, uint32_t magicToCheck)
 {
 	if (!VerifyHeader(this->type, typeToCheck) || this->magic != magicToCheck)
 		throw std::runtime_error("NDS Standard Header for " + typeToCheck + " invalid");
+}
+
 }

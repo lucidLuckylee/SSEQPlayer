@@ -11,14 +11,18 @@
 #include "Player.h"
 #include "common.h"
 
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(_LIBCPP_VERSION)
-std::locale::id std::codecvt<char16_t, char, mbstate_t>::id;
-std::locale::id std::codecvt<char32_t, char, mbstate_t>::id;
-#endif
+namespace melonDS::Sound::SSEQPlayer
+{
 
-Player::Player() : prio(0), nTracks(0), tempo(0), tempoCount(0), tempoRate(0), masterVol(0), sseqVol(0), sseq(nullptr), sampleRate(0), interpolation(INTERPOLATION_NONE)
+
+Player::Player() : prio(0), nTracks(0), tempo(0), tempoCount(0), tempoRate(0), masterVol(0), extFader(0), trackMute(0), outputVol(128),
+	tickCounter(0), seqEnded(false), paused(false), skipNotes(false), sseq(nullptr), sampleRate(32768), interpolation(INTERPOLATION_NONE),
+	secondsPerSample(1.0 / 32768), secondsIntoPlayback(0), secondsUntilNextClock(SecondsPerClockCycle)
 {
 	memset(this->trackIds, 0, sizeof(this->trackIds));
+	memset(this->trackExtFader, 0, sizeof(this->trackExtFader));
+	memset(this->trackExtPitch, 0, sizeof(this->trackExtPitch));
+	memset(this->trackExtPan, 0, sizeof(this->trackExtPan));
 	for (size_t i = 0; i < 16; ++i)
 	{
 		this->channels[i].chnId = i;
@@ -53,8 +57,11 @@ bool Player::Setup(const SSEQ *sseqToPlay)
 void Player::ClearState()
 {
 	this->tempo = 120;
-	this->tempoCount = 0;
+	this->tempoCount = 240; // SND_BASE_TEMPO: the driver runs the first tick right away
 	this->tempoRate = 0x100;
+	this->tickCounter = 0;
+	this->seqEnded = false;
+	this->paused = false;
 	this->masterVol = 0; // this is actually the highest level
 	memset(this->variables, -1, sizeof(this->variables));
 	this->secondsIntoPlayback = 0;
@@ -109,9 +116,9 @@ int Player::ChannelAlloc(int type, int priority)
 	{
 		int thisChnNo = chnArray[i];
 		Channel &thisChn = this->channels[thisChnNo];
-		Channel &curChn = this->channels[curChnNo];
-		if (curChnNo != -1 && thisChn.prio >= curChn.prio)
+		if (curChnNo != -1 && thisChn.prio >= this->channels[curChnNo].prio)
 		{
+			Channel &curChn = this->channels[curChnNo];
 			if (thisChn.prio != curChn.prio)
 				continue;
 			if (curChn.vol <= thisChn.vol)
@@ -145,14 +152,34 @@ int Player::TrackAlloc()
 	return -1;
 }
 
-// Original FSS Function: Player_Run
-void Player::Run()
+// One sequencer tick (NitroSDK PlayerSeqMain)
+void Player::RunTick()
+{
+	if (this->seqEnded)
+		return;
+	bool anyActive = false;
+	for (uint8_t i = 0; i < this->nTracks; ++i)
+	{
+		Track &trk = this->tracks[this->trackIds[i]];
+		trk.Run();
+		if (!trk.state[TS_END])
+			anyActive = true;
+	}
+	++this->tickCounter;
+	if (!anyActive)
+		this->seqEnded = true;
+}
+
+// Original FSS Function: Player_Run (NitroSDK PlayerTempoMain)
+// Stops early once tickCounter reaches tickLimit; the remaining ticks run on the next call.
+void Player::Run(uint32_t tickLimit)
 {
 	while (this->tempoCount >= 240)
 	{
+		if (this->tickCounter >= tickLimit)
+			return;
 		this->tempoCount -= 240;
-		for (uint8_t i = 0; i < this->nTracks; ++i)
-			this->tracks[this->trackIds[i]].Run();
+		this->RunTick();
 	}
 	this->tempoCount += (static_cast<int>(this->tempo) * static_cast<int>(this->tempoRate)) >> 8;
 }
@@ -166,14 +193,86 @@ void Player::UpdateTracks()
 }
 
 // Original FSS Function: Snd_Timer
-void Player::Timer()
+void Player::Timer(uint32_t tickLimit)
 {
 	this->UpdateTracks();
 
 	for (int i = 0; i < 16; ++i)
 		this->channels[i].Update();
 
-	this->Run();
+	if (!this->paused)
+		this->Run(tickLimit);
+}
+
+void Player::SetSampleRate(double rate)
+{
+	if (rate == this->sampleRate)
+		return;
+	for (int i = 0; i < 16; ++i)
+		this->channels[i].reg.sampleIncrease *= this->sampleRate / rate;
+	this->sampleRate = rate;
+	this->secondsPerSample = 1.0 / rate;
+}
+
+void Player::FlagTracks(uint16_t trackMask, int flag)
+{
+	for (uint8_t i = 0; i < this->nTracks; ++i)
+	{
+		Track &trk = this->tracks[this->trackIds[i]];
+		if (trackMask & (1 << (trk.num & 15)))
+			trk.updateFlags.set(flag);
+	}
+}
+
+// NitroSDK SetTrackMute: 0 = off, 1 = mute (notes keep playing), 2 = mute + release, 3 = mute + stop
+void Player::SetTrackMute(int trackNum, int mode)
+{
+	trackNum &= 15;
+	if (mode == 0)
+		this->trackMute &= ~(1 << trackNum);
+	else
+		this->trackMute |= 1 << trackNum;
+	if (mode < 2)
+		return;
+	for (uint8_t i = 0; i < this->nTracks; ++i)
+	{
+		Track &trk = this->tracks[this->trackIds[i]];
+		if ((trk.num & 15) != trackNum)
+			continue;
+		for (int j = 0; j < 16; ++j)
+		{
+			Channel &chn = this->channels[j];
+			if (chn.state == CS_NONE || chn.trackId != trk.trackId)
+				continue;
+			if (mode == 3)
+				chn.Kill();
+			else
+				chn.Release();
+		}
+	}
+}
+
+// NitroSDK SND_PauseSeq: stop sequencing and release held notes (release rate 127)
+void Player::SetPaused(bool pause)
+{
+	if (pause && !this->paused)
+		for (int i = 0; i < 16; ++i)
+			if (this->channels[i].state != CS_NONE)
+			{
+				this->channels[i].releaseRate = Cnv_Fall(127);
+				this->channels[i].Release();
+			}
+	this->paused = pause;
+}
+
+bool Player::Finished() const
+{
+	if (!this->seqEnded)
+		return false;
+	for (int i = 0; i < 16; ++i)
+		if (this->channels[i].state != CS_NONE)
+			return false;
+	return true;
 }
 
 static inline int32_t muldiv7(int32_t val, uint8_t mul)
@@ -181,7 +280,7 @@ static inline int32_t muldiv7(int32_t val, uint8_t mul)
 	return mul == 127 ? val : ((val * mul) >> 7);
 }
 
-void Player::GenerateSamples(std::vector<uint8_t> &buf, unsigned offset, unsigned samples)
+void Player::GenerateSamples(int16_t *buf, unsigned samples)
 {
 	unsigned long mute = this->mutes.to_ulong();
 
@@ -214,13 +313,13 @@ void Player::GenerateSamples(std::vector<uint8_t> &buf, unsigned offset, unsigne
 			}
 		}
 
+		leftChannel = (leftChannel * this->outputVol) >> 7;
+		rightChannel = (rightChannel * this->outputVol) >> 7;
 		clamp(leftChannel, -0x8000, 0x7FFF);
 		clamp(rightChannel, -0x8000, 0x7FFF);
 
-		buf[offset++] = leftChannel & 0xFF;
-		buf[offset++] = (leftChannel >> 8) & 0xFF;
-		buf[offset++] = rightChannel & 0xFF;
-		buf[offset++] = (rightChannel >> 8) & 0xFF;
+		*buf++ = leftChannel;
+		*buf++ = rightChannel;
 
 		if (this->secondsIntoPlayback > this->secondsUntilNextClock)
 		{
@@ -230,3 +329,4 @@ void Player::GenerateSamples(std::vector<uint8_t> &buf, unsigned offset, unsigne
 	}
 }
 
+}

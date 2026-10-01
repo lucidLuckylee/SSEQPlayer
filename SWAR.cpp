@@ -12,7 +12,10 @@
 #include "SWAR.h"
 #include "NDSStdHeader.h"
 
-SWAR::SWAR(const std::string &fn) : filename(fn), swavs(), info()
+namespace melonDS::Sound::SSEQPlayer
+{
+
+SWAR::SWAR(const std::string &fn) : filename(fn), swavs()
 {
 }
 
@@ -33,10 +36,12 @@ void SWAR::Read(PseudoFile &file)
 	auto offsets = std::vector<uint32_t>(count);
 	file.ReadLE(offsets);
 	for (uint32_t i = 0; i < count; ++i)
-		if (offsets[i])
+		if (offsets[i] && offsets[i] < file.data->size())
 		{
 			file.pos = startOfSWAR + offsets[i];
 			this->swavs[i] = SWAV();
 			this->swavs[i].Read(file);
 		}
+}
+
 }

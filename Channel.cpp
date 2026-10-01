@@ -18,6 +18,9 @@
 #include "Player.h"
 #include "common.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 NDSSoundRegister::NDSSoundRegister() : volumeMul(0), volumeDiv(0), panning(0), waveDuty(0), repeatMode(0), format(0), enable(false),
 	source(nullptr), timer(0), psgX(0), psgLast(0), psgLastCount(0), samplePosition(0), sampleIncrease(0), loopStart(0), length(0), totalLength(0)
 {
@@ -44,61 +47,38 @@ TempSndReg::TempSndReg() : CR(0), SOURCE(nullptr), TIMER(0), REPEAT_POINT(0), LE
 {
 }
 
-bool Channel::initializedLUTs = false;
-double Channel::sinc_lut[Channel::SINC_SAMPLES + 1];
-double Channel::window_lut[Channel::SINC_SAMPLES + 1];
-
-#ifndef M_PI
-static const double M_PI = 3.14159265358979323846;
-#endif
-
-// Code from http://learningcppisfun.blogspot.com/2010/04/comparing-floating-point-numbers.html
-template<typename T> inline bool fEqual(T x, T y, int N = 1)
-{
-	T diff = std::abs(x - y);
-	T tolerance = N * std::numeric_limits<T>::epsilon();
-	return diff <= tolerance * std::abs(x) && diff <= tolerance * std::abs(y);
-}
-
-static inline double sinc(double x)
-{
-	return fEqual(x, 0.0) ? 1.0 : std::sin(x * M_PI) / (x * M_PI);
-}
-
 Channel::Channel() : chnId(-1), tempReg(), state(CS_NONE), trackId(-1), prio(0), manualSweep(false), flags(), pan(0), extAmpl(0), velocity(0), extPan(0),
 	key(0), ampl(0), extTune(0), orgKey(0), modType(0), modSpeed(0), modDepth(0), modRange(0), modDelay(0), modDelayCnt(0), modCounter(0),
 	sweepLen(0), sweepCnt(0), sweepPitch(0), attackLvl(0), sustainLvl(0x7F), decayRate(0), releaseRate(0xFFFF), noteLength(-1), vol(0), ply(nullptr), reg()
 {
 	this->clearHistory();
-	if (!this->initializedLUTs)
-	{
-		double dx = static_cast<double>(SINC_WIDTH) / SINC_SAMPLES, x = 0.0;
-		for (unsigned i = 0; i <= SINC_SAMPLES; ++i, x += dx)
-		{
-			double y = x / SINC_WIDTH;
-			this->sinc_lut[i] = std::abs(x) < SINC_WIDTH ? sinc(x) : 0.0;
-			this->window_lut[i] = (0.40897 + 0.5 * std::cos(M_PI * y) + 0.09103 * std::cos(2 * M_PI * y));
-		}
-		this->initializedLUTs = true;
-	}
 }
 
 // Original FSS Function: Chn_UpdateVol
+// Mirrors NitroSDK snd_seq.c UpdateTrackChannel():
+//   user_decay  = DecibelSquare(track volume) + DecibelSquare(track volume2) + DecibelSquare(player volume)
+//   user_decay2 = track extFader + player extFader
+// each clamped to >= -32768. Channel::Update then adds velocity, envelope and LFO and
+// clamps the sum to [-723, 0] like SND_CalcChannelVolume().
 void Channel::UpdateVol(const Track &trk)
 {
-	int finalVol = trk.ply->masterVol;
-	finalVol += trk.ply->sseqVol;
-	finalVol += Cnv_Sust(trk.vol);
-	finalVol += Cnv_Sust(trk.expr);
-	if (finalVol < -AMPL_K)
-		finalVol = -AMPL_K;
-	this->extAmpl = finalVol;
+	int decay = trk.ply->masterVol;
+	decay += Cnv_Sust(trk.vol);
+	decay += Cnv_Sust(trk.expr);
+	if (decay < -32768)
+		decay = -32768;
+	int decay2 = trk.ply->extFader + trk.ply->trackExtFader[trk.num & 15];
+	if (decay2 < -32768)
+		decay2 = -32768;
+	this->extAmpl = decay + decay2;
 }
 
 // Original FSS Function: Chn_UpdatePan
 void Channel::UpdatePan(const Track &trk)
 {
-	this->extPan = trk.pan;
+	int p = trk.pan + trk.ply->trackExtPan[trk.num & 15];
+	clamp(p, -128, 127);
+	this->extPan = p;
 }
 
 // Original FSS Function: Chn_UpdateTune
@@ -106,6 +86,7 @@ void Channel::UpdateTune(const Track &trk)
 {
 	int tune = (static_cast<int>(this->key) - static_cast<int>(this->orgKey)) * 64;
 	tune += (static_cast<int>(trk.pitchBend) * static_cast<int>(trk.pitchBendRange)) >> 1;
+	tune += trk.ply->trackExtPitch[trk.num & 15];
 	this->extTune = tune;
 }
 
@@ -482,7 +463,7 @@ void Channel::Update()
 		case CS_DECAY:
 		{
 			this->ampl -= static_cast<int>(this->decayRate);
-			int sustLvl = Cnv_Sust(this->sustainLvl) << 7;
+			int sustLvl = Cnv_Sust(this->sustainLvl) * 128;
 			if (this->ampl <= sustLvl)
 			{
 				this->ampl = sustLvl;
@@ -552,7 +533,7 @@ void Channel::Update()
 		if (totalAdj)
 			tmr = Timer_Adjust(tmr, totalAdj);
 		this->reg.timer = -tmr;
-		this->reg.sampleIncrease = (ARM7_CLOCK / static_cast<double>(this->ply->sampleRate * 2)) / (0x10000 - this->reg.timer);
+		this->reg.sampleIncrease = (ARM7_CLOCK / (this->ply->sampleRate * 2)) / (0x10000 - this->reg.timer);
 		this->flags.reset(CF_UPDTMR);
 	}
 
@@ -625,25 +606,7 @@ int32_t Channel::Interpolate()
 
 	const auto &data = &this->sampleHistory[this->sampleHistoryPtr + 16];
 
-	if (this->ply->interpolation == INTERPOLATION_SINC)
-	{
-		double kernel[SINC_WIDTH * 2], kernel_sum = 0.0;
-		int i = SINC_WIDTH, shift = static_cast<int>(std::floor(ratio * SINC_RESOLUTION));
-		int step = this->reg.sampleIncrease > 1.0 ? static_cast<int>(SINC_RESOLUTION / this->reg.sampleIncrease) : SINC_RESOLUTION;
-		int shift_adj = shift * step / SINC_RESOLUTION;
-		const int window_step = SINC_RESOLUTION;
-		for (; i >= -static_cast<int>(SINC_WIDTH - 1); --i)
-		{
-			int pos = i * step;
-			int window_pos = i * window_step;
-			kernel_sum += kernel[i + SINC_WIDTH - 1] = this->sinc_lut[std::abs(shift_adj - pos)] * this->window_lut[std::abs(shift - window_pos)];
-		}
-		double sum = 0.0;
-		for (i = 0; i < static_cast<int>(SINC_WIDTH * 2); ++i)
-			sum += data[i - static_cast<int>(SINC_WIDTH) + 1] * kernel[i];
-		return static_cast<int32_t>(sum / kernel_sum);
-	}
-	else if (this->ply->interpolation > INTERPOLATION_LINEAR)
+	if (this->ply->interpolation > INTERPOLATION_LINEAR)
 	{
 		double c0, c1, c2, c3, c4, c5;
 
@@ -725,20 +688,27 @@ void Channel::IncrementSample()
 
 	if (this->reg.format != 3 && this->reg.samplePosition >= 0)
 	{
+		if (!this->reg.totalLength)
+		{
+			this->Kill();
+			return;
+		}
+
 		uint32_t loc = static_cast<uint32_t>(this->reg.samplePosition);
 		uint32_t newloc = static_cast<uint32_t>(samplePosition);
+		// only the last 32 source samples can reach the interpolation history
+		if (newloc - loc > 32)
+			loc = newloc - 32;
 
-		if (newloc >= this->reg.totalLength)
-			newloc -= this->reg.length;
-
-		while (loc != newloc)
+		for (; loc != newloc; ++loc)
 		{
-			this->sampleHistory[this->sampleHistoryPtr] = this->sampleHistory[this->sampleHistoryPtr + 32] = this->reg.source->dataptr[loc++];
+			uint32_t idx = loc;
+			if (idx >= this->reg.totalLength)
+				idx = this->reg.length ? this->reg.loopStart + (idx - this->reg.loopStart) % this->reg.length : this->reg.totalLength - 1;
+
+			this->sampleHistory[this->sampleHistoryPtr] = this->sampleHistory[this->sampleHistoryPtr + 32] = this->reg.source->dataptr[idx];
 
 			this->sampleHistoryPtr = (this->sampleHistoryPtr + 1) & 31;
-
-			if (loc >= this->reg.totalLength)
-				loc -= this->reg.length;
 		}
 	}
 
@@ -746,18 +716,33 @@ void Channel::IncrementSample()
 
 	if (this->reg.format != 3 && this->reg.samplePosition >= this->reg.totalLength)
 	{
-		if (this->reg.repeatMode == 1)
-		{
-			while (this->reg.samplePosition >= this->reg.totalLength)
-				this->reg.samplePosition -= this->reg.length;
-		}
+		if (this->reg.repeatMode == 1 && this->reg.length)
+			this->reg.samplePosition = this->reg.loopStart + std::fmod(this->reg.samplePosition - this->reg.loopStart, static_cast<double>(this->reg.length));
 		else
 			this->Kill();
 	}
+}
+
+// Advance the playback position without producing output (used when seeking).
+void Channel::SkipSamples(double samples)
+{
+	if (this->state == CS_NONE)
+		return;
+	this->reg.samplePosition += this->reg.sampleIncrease * samples;
+	if (this->reg.format != 3 && this->reg.samplePosition >= this->reg.totalLength)
+	{
+		if (this->reg.repeatMode == 1 && this->reg.length)
+			this->reg.samplePosition = this->reg.loopStart + std::fmod(this->reg.samplePosition - this->reg.loopStart, static_cast<double>(this->reg.length));
+		else
+			this->Kill();
+	}
+	this->clearHistory();
 }
 
 void Channel::clearHistory()
 {
 	this->sampleHistoryPtr = 0;
 	memset(this->sampleHistory, 0, sizeof(this->sampleHistory));
+}
+
 }

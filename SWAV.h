@@ -11,6 +11,9 @@
 
 #include "common.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 struct SWAV
 {
 	uint8_t waveType;
@@ -27,3 +30,5 @@ struct SWAV
 	void Read(PseudoFile &file);
 	void DecodeADPCM(const uint8_t *origData, uint32_t len);
 };
+
+}

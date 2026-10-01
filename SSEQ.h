@@ -10,8 +10,10 @@
 #pragma once
 
 #include "SBNK.h"
-#include "INFOEntry.h"
 #include "common.h"
+
+namespace melonDS::Sound::SSEQPlayer
+{
 
 struct SSEQ
 {
@@ -19,7 +21,6 @@ struct SSEQ
 	std::vector<uint8_t> data;
 
 	const SBNK *bank;
-	INFOEntrySEQ info;
 
 	SSEQ(const std::string &fn = "");
 	SSEQ(const SSEQ &sseq);
@@ -27,3 +28,5 @@ struct SSEQ
 
 	void Read(PseudoFile &file);
 };
+
+}

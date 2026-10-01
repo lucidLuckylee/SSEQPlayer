@@ -7,7 +7,11 @@
  * http://www.feshrine.net/hacking/doc/nds-sdat.html
  */
 
+#include <stdexcept>
 #include "SWAV.h"
+
+namespace melonDS::Sound::SSEQPlayer
+{
 
 static int ima_index_table[] =
 {
@@ -114,6 +118,8 @@ void SWAV::Read(PseudoFile &file)
 	else if (this->waveType == 2)
 	{
 		// IMA ADPCM -> PCM signed 16-bit
+		if (size < 4)
+			throw std::runtime_error("SWAV ADPCM data too short");
 		this->data.resize((size - 4) * 2, 0);
 		this->DecodeADPCM(&origData[0], size - 4);
 		if (this->loopOffset)
@@ -121,5 +127,11 @@ void SWAV::Read(PseudoFile &file)
 		this->loopOffset *= 8;
 		this->nonLoopLength *= 8;
 	}
-	this->dataptr = &this->data[0];
+	if (this->loopOffset > this->data.size())
+		this->loopOffset = this->data.size();
+	if (this->loopOffset + this->nonLoopLength > this->data.size())
+		this->nonLoopLength = this->data.size() - this->loopOffset;
+	this->dataptr = this->data.data();
+}
+
 }

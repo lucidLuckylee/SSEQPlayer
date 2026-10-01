@@ -15,6 +15,9 @@
 
 #include <cstdint>
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 const uint32_t ARM7_CLOCK = 33513982;
 const double SecondsPerClockCycle = 64.0 * 2728.0 / ARM7_CLOCK;
 
@@ -35,7 +38,7 @@ const int FSS_MAXTRACKS = 32;
 const int FSS_TRACKSTACKSIZE = 3;
 const int AMPL_K = 723;
 const int AMPL_MIN = -AMPL_K;
-const int AMPL_THRESHOLD = AMPL_MIN << 7;
+const int AMPL_THRESHOLD = AMPL_MIN * 128;
 
 inline int SOUND_FREQ(int n) { return -0x1000000 / n; }
 
@@ -55,6 +58,7 @@ enum Interpolation
 	INTERPOLATION_NONE,
 	INTERPOLATION_LINEAR,
 	INTERPOLATION_4POINTLEGRANGE,
-	INTERPOLATION_6POINTLEGRANGE,
-	INTERPOLATION_SINC
+	INTERPOLATION_6POINTLEGRANGE
 };
+
+}

@@ -14,6 +14,10 @@
 #include <vector>
 #include <cstring>
 #include <cstdint>
+#include <stdexcept>
+
+namespace melonDS::Sound::SSEQPlayer
+{
 
 /*
  * Pseudo-file data structure
@@ -28,11 +32,18 @@ struct PseudoFile
 	{
 	}
 
+	void Check(size_t n) const
+	{
+		if (this->pos + n > this->data->size())
+			throw std::out_of_range("PseudoFile read past end");
+	}
+
 	template<typename T> T ReadLE()
 	{
+		this->Check(sizeof(T));
 		T finalVal = 0;
 		for (size_t i = 0; i < sizeof(T); ++i)
-			finalVal |= (*this->data)[this->pos++] << (i * 8);
+			finalVal |= static_cast<T>((*this->data)[this->pos++]) << (i * 8);
 		return finalVal;
 	}
 
@@ -44,6 +55,7 @@ struct PseudoFile
 
 	template<size_t N> void ReadLE( uint8_t arr[N])
 	{
+		this->Check(N);
 		memcpy(&arr[0], &(*this->data)[this->pos], N);
 		this->pos += N;
 	}
@@ -56,6 +68,9 @@ struct PseudoFile
 
 	void ReadLE(std::vector<uint8_t> &arr)
 	{
+		this->Check(arr.size());
+		if (arr.empty())
+			return;
 		memcpy(&arr[0], &(*this->data)[this->pos], arr.size());
 		this->pos += arr.size();
 	}
@@ -260,7 +275,7 @@ inline int read24(const uint8_t **ppData)
 inline int readvl(const uint8_t **ppData)
 {
 	int x = 0;
-	for (;;)
+	for (int i = 0; i < 4; ++i)
 	{
 		int data = read8(ppData);
 		x = (x << 7) | (data & 0x7F);
@@ -277,4 +292,6 @@ template<typename T1, typename T2> inline void clamp(T1 &valueToClamp, const T2 
 		valueToClamp = minValue;
 	else if (valueToClamp > maxValue)
 		valueToClamp = maxValue;
+}
+
 }

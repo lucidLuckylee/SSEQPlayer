@@ -19,6 +19,9 @@
 #include "SWAV.h"
 #include "Track.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 /*
  * This structure is meant to be similar to what is stored in the actual
  * Nintendo DS's sound registers.  Items that were not being used by this
@@ -95,7 +98,7 @@ struct Channel
 
 	std::bitset<CF_BITS> flags;
 	int8_t pan; // -64 .. 63
-	int16_t extAmpl;
+	int extAmpl; // track/player volume + extFader in centibels, see UpdateVol
 
 	int16_t velocity;
 	int8_t extPan;
@@ -134,19 +137,6 @@ struct Channel
 	uint32_t sampleHistoryPtr;
 	int16_t sampleHistory[64];
 
-	/*
-	 * Lookup tables for the Sinc interpolation, to
-	 * avoid the need to call the sin/cos functions all the time.
-	 * These are static as they will not change between channels or runs
-	 * of the program.
-	 */
-	static bool initializedLUTs;
-	static const unsigned SINC_RESOLUTION = 8192;
-	static const unsigned SINC_WIDTH = 8;
-	static const unsigned SINC_SAMPLES = SINC_RESOLUTION * SINC_WIDTH;
-	static double sinc_lut[SINC_SAMPLES + 1];
-	static double window_lut[SINC_SAMPLES + 1];
-
 	Channel();
 
 	void UpdateVol(const Track &trk);
@@ -161,5 +151,8 @@ struct Channel
 	int32_t Interpolate();
 	int32_t GenerateSample();
 	void IncrementSample();
+	void SkipSamples(double samples);
 	void clearHistory();
 };
+
+}

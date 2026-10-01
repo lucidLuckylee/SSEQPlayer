@@ -11,11 +11,14 @@
 #include "SSEQ.h"
 #include "NDSStdHeader.h"
 
-SSEQ::SSEQ(const std::string &fn) : filename(fn), data(), bank(nullptr), info()
+namespace melonDS::Sound::SSEQPlayer
+{
+
+SSEQ::SSEQ(const std::string &fn) : filename(fn), data(), bank(nullptr)
 {
 }
 
-SSEQ::SSEQ(const SSEQ &sseq) : filename(sseq.filename), data(sseq.data), bank(sseq.bank), info(sseq.info)
+SSEQ::SSEQ(const SSEQ &sseq) : filename(sseq.filename), data(sseq.data), bank(sseq.bank)
 {
 }
 
@@ -27,7 +30,6 @@ SSEQ &SSEQ::operator=(const SSEQ &sseq)
 		this->data = sseq.data;
 
 		this->bank = sseq.bank;
-		this->info = sseq.info;
 	}
 	return *this;
 }
@@ -47,4 +49,6 @@ void SSEQ::Read(PseudoFile &file)
 	this->data.resize(size - 12, 0);
 	file.pos = startOfSSEQ + dataOffset;
 	file.ReadLE(this->data);
+}
+
 }

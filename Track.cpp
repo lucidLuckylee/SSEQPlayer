@@ -13,6 +13,9 @@
 #include "Player.h"
 #include "common.h"
 
+namespace melonDS::Sound::SSEQPlayer
+{
+
 Track::Track()
 {
 	this->Zero();
@@ -110,6 +113,8 @@ int Track::NoteOn(int key, int vel, int len)
 	int nCh = -1;
 
 	auto &instrument = sbnk->instruments[this->patch];
+	if (instrument.ranges.empty())
+		return -1;
 	const SBNKInstrumentRange *noteDef = nullptr;
 	int fRecord = instrument.record;
 
@@ -168,16 +173,23 @@ int Track::NoteOn(int key, int vel, int len)
 		chn->tempReg.TIMER = -SOUND_FREQ(262 * 8); // key #60 (C4)
 		chn->reg.samplePosition = -1;
 		chn->reg.psgX = 0x7FFF;
+		chn->reg.psgLastCount = 0;
 	}
 
 	if (bIsPCM)
 	{
+		if (noteDef->swar >= 4 || !sbnk->waveArc[noteDef->swar])
+			return -1;
+		auto swavIt = sbnk->waveArc[noteDef->swar]->swavs.find(noteDef->swav);
+		if (swavIt == sbnk->waveArc[noteDef->swar]->swavs.end() || swavIt->second.data.empty())
+			return -1;
+
 		nCh = this->ply->ChannelAlloc(TYPE_PCM, this->prio);
 		if (nCh < 0)
 			return -1;
 		chn = &this->ply->channels[nCh];
 
-		auto swav = &sbnk->waveArc[noteDef->swar]->swavs.find(noteDef->swav)->second;
+		auto swav = &swavIt->second;
 		chn->tempReg.CR = SOUND_FORMAT(swav->waveType & 3) | SOUND_LOOP(!!swav->loop) | SCHANNEL_ENABLE;
 		chn->tempReg.SOURCE = swav;
 		chn->tempReg.TIMER = swav->time;
@@ -323,7 +335,7 @@ enum SseqCommand
 	SSEQ_CMD_CMP_LT = 0xBC,
 	SSEQ_CMD_CMP_NE = 0xBD,
 
-	SSEQ_CMD_MUTE = 0xD7 // Unsupported
+	SSEQ_CMD_MUTE = 0xD7
 };
 
 static const uint8_t VariableByteCount = 1 << 7;
@@ -401,6 +413,15 @@ static inline uint8_t SseqCommandByteCount(int cmd)
 			default:
 				return 0;
 		}
+}
+
+// Jump targets come from game data: clamp out-of-range offsets to the END padding at the tail of the data
+static inline const uint8_t *DataAt(const Player *ply, int offset)
+{
+	const auto &data = ply->sseq->data;
+	if (static_cast<size_t>(offset) >= data.size())
+		offset = data.size() - 1;
+	return &data[offset];
 }
 
 static auto varFuncSet = [](int16_t, int16_t value) { return value; };
@@ -508,7 +529,9 @@ void Track::Run()
 			int len = this->overriding.val(pData, readvl);
 			if (this->state[TS_NOTEWAIT])
 				this->wait = len;
-			if (this->state[TS_TIEBIT])
+			if (this->ply->skipNotes || (this->ply->trackMute & (1 << (this->num & 15))))
+				;
+			else if (this->state[TS_TIEBIT])
 				this->NoteOnTie(key, vel);
 			else
 				this->NoteOn(key, vel, len);
@@ -525,8 +548,8 @@ void Track::Run()
 				case SSEQ_CMD_OPENTRACK:
 				{
 					int tNum = read8(pData);
-					auto trackPos = &this->ply->sseq->data[read24(pData)];
-					int newTrack = this->ply->TrackAlloc();
+					auto trackPos = DataAt(this->ply, read24(pData));
+					int newTrack = this->ply->nTracks < FSS_TRACKCOUNT ? this->ply->TrackAlloc() : -1;
 					if (newTrack != -1)
 					{
 						this->ply->tracks[newTrack].Init(newTrack, this->ply, trackPos, tNum);
@@ -544,14 +567,14 @@ void Track::Run()
 					break;
 
 				case SSEQ_CMD_GOTO:
-					*pData = &this->ply->sseq->data[read24(pData)];
+					*pData = DataAt(this->ply, read24(pData));
 					break;
 
 				case SSEQ_CMD_CALL:
 					value = read24(pData);
 					if (this->stackPos < FSS_TRACKSTACKSIZE)
 					{
-						const uint8_t *dest = &this->ply->sseq->data[value];
+						const uint8_t *dest = DataAt(this->ply, value);
 						this->stack[this->stackPos++] = StackValue(STACKTYPE_CALL, *pData);
 						*pData = dest;
 					}
@@ -602,8 +625,14 @@ void Track::Run()
 					break;
 
 				case SSEQ_CMD_END:
+					// the driver closes the track, which releases its notes
 					this->state.set(TS_END);
+					this->ReleaseAllNotes();
 					return;
+
+				case SSEQ_CMD_MUTE:
+					this->ply->SetTrackMute(this->num, read8(pData));
+					break;
 
 				case SSEQ_CMD_LOOPSTART:
 					value = this->overriding.val(pData, read8);
@@ -731,7 +760,8 @@ void Track::Run()
 						this->overriding.extraValue = read8(pData);
 					int16_t minVal = read16(pData);
 					int16_t maxVal = read16(pData);
-					this->overriding.value = (std::rand() % (maxVal - minVal + 1)) + minVal;
+					int range = maxVal - minVal + 1;
+					this->overriding.value = range > 0 ? (std::rand() % range) + minVal : minVal;
 					break;
 				}
 
@@ -744,7 +774,8 @@ void Track::Run()
 					this->overriding.cmd = read8(pData);
 					if ((this->overriding.cmd >= SSEQ_CMD_SETVAR && this->overriding.cmd <= SSEQ_CMD_CMP_NE) || this->overriding.cmd < 0x80)
 						this->overriding.extraValue = read8(pData);
-					this->overriding.value = this->ply->variables[read8(pData)];
+					value = read8(pData);
+					this->overriding.value = value < 32 ? this->ply->variables[value] : 0;
 					break;
 
 				case SSEQ_CMD_SETVAR:
@@ -755,8 +786,10 @@ void Track::Run()
 				case SSEQ_CMD_SHIFTVAR:
 				case SSEQ_CMD_RANDVAR:
 				{
-					int8_t varNo = this->overriding.val(pData, read8, true);
+					uint8_t varNo = this->overriding.val(pData, read8, true);
 					value = this->overriding.val(pData, read16);
+					if (varNo >= 32)
+						break;
 					if (cmd == SSEQ_CMD_DIVVAR && !value) // Division by 0, skip it to prevent crashing
 					break;
 					this->ply->variables[varNo] = VarFunc(cmd)(this->ply->variables[varNo], value);
@@ -774,8 +807,10 @@ void Track::Run()
 				case SSEQ_CMD_CMP_LT:
 				case SSEQ_CMD_CMP_NE:
 				{
-					int8_t varNo = this->overriding.val(pData, read8, true);
+					uint8_t varNo = this->overriding.val(pData, read8, true);
 					value = this->overriding.val(pData, read16);
+					if (varNo >= 32)
+						break;
 					this->lastComparisonResult = CompareFunc(cmd)(this->ply->variables[varNo], value);
 					break;
 				}
@@ -808,4 +843,6 @@ void Track::Run()
 		if (cmd != SSEQ_CMD_RANDOM && cmd != SSEQ_CMD_FROMVAR)
 			this->overriding() = false;
 	}
+}
+
 }
